@@ -23,6 +23,8 @@ npm install
 npm run dev
 ```
 
+La base écoute sur le port 5434 (et la base de test sur 5435), pour ne pas gêner un PostgreSQL déjà installé sur le port 5432.
+
 Ouvre http://localhost:5173, choisis une leçon et importe `server/src/exam-import/exemple-qcm.csv`.
 
 Sans Docker, crée une base, exécute `db/schema.sql` puis `db/seed-dev.sql`, et donne son adresse au serveur : `DATABASE_URL=postgres://user:mdp@localhost:5432/corelab npm run dev`.
@@ -72,8 +74,8 @@ Pour lancer aussi les 8 tests qui touchent la base (import, réimport, transacti
 
 ```bash
 docker compose up -d db-test
-TEST_DATABASE_URL=postgres://corelab:corelab@localhost:5433/corelab_test npm test                 # bash
-$env:TEST_DATABASE_URL="postgres://corelab:corelab@localhost:5433/corelab_test"; npm test        # PowerShell
+TEST_DATABASE_URL=postgres://corelab:corelab@localhost:5435/corelab_test npm test                 # bash
+$env:TEST_DATABASE_URL="postgres://corelab:corelab@localhost:5435/corelab_test"; npm test        # PowerShell
 ```
 
 Ces tests vident les tables de la base qu'on leur donne : utilise toujours `db-test`, jamais la base de développement.

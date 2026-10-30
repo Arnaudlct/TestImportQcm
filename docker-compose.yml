@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: corelab
       POSTGRES_DB: corelab
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./db/seed-dev.sql:/docker-entrypoint-initdb.d/02-seed-dev.sql:ro
@@ -21,7 +21,7 @@ services:
       POSTGRES_PASSWORD: corelab
       POSTGRES_DB: corelab_test
     ports:
-      - "5433:5432"
+      - "5435:5432"
     volumes:
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     tmpfs:

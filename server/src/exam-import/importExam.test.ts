@@ -55,7 +55,7 @@ describe('prepareExam', () => {
 });
 
 // Tests sur une base de test qui a le schéma Corelab (ils vident ses tables) :
-// TEST_DATABASE_URL=postgres://corelab:corelab@localhost:5433/corelab_test npm test
+// TEST_DATABASE_URL=postgres://corelab:corelab@localhost:5435/corelab_test npm test
 const url = process.env.TEST_DATABASE_URL;
 
 describe.skipIf(!url)('base Corelab (PostgreSQL)', () => {
