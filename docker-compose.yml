@@ -1,0 +1,31 @@
+# Base PostgreSQL locale avec le schéma Corelab et les données de démo.
+# Les scripts de db/ ne s'exécutent qu'à la création du volume : `docker compose down -v` pour repartir de zéro.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: corelab
+      POSTGRES_PASSWORD: corelab
+      POSTGRES_DB: corelab
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/seed-dev.sql:/docker-entrypoint-initdb.d/02-seed-dev.sql:ro
+      - corelab-data:/var/lib/postgresql/data
+
+  db-test:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: corelab
+      POSTGRES_PASSWORD: corelab
+      POSTGRES_DB: corelab_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+
+volumes:
+  corelab-data:

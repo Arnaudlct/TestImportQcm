@@ -1,0 +1,5 @@
+question;A;B;C;D;reponses
+Que signifie HTML ?;HyperText Markup Language;High Tech Modern Language;Home Tool Markup Language;;A
+Quelles balises servent à créer une liste ?;<ul>;<ol>;<list>;<li-group>;A,B
+Quelle balise insère une image ?;<img>;<picture-src>;;;A
+"Quel attribut donne le texte alternatif d'une image ; et à quoi sert-il ?";"alt, pour l'accessibilité";"title, pour le style";;;A
