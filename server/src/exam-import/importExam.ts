@@ -2,8 +2,9 @@
 // prepareExam vérifie le fichier et le formulaire sans toucher à la base (aperçu) ;
 // saveExam écrit l'examen en une seule transaction (confirmation).
 
-import { CHOICE_COLUMNS, parseQuizUpload } from './parseQuizCsv';
-import { validateQuiz, type Quiz, type ValidationResult } from './validateQuiz';
+import { CHOICE_COLUMNS, decodeText, parseQuizCsv, type Question, type ValidationError } from './parseQuizCsv';
+
+export const MAX_TITLE_LENGTH = 200; // exams.exam_title est un varchar(200)
 
 // Le strict nécessaire d'un client `pg` (PoolClient) : un vrai client ou un faux en test.
 export interface DbClient {
@@ -16,37 +17,34 @@ export interface ExamForm {
   threshold?: string | number;
 }
 
-export type PreparedExam = Quiz & { passingScore: number };
-
-// Le seuil est obligatoire (exams.threshold est NOT NULL) ; "70" devient 70,
-// toute autre valeur est laissée telle quelle pour que validateQuiz la refuse.
-function readThreshold(value: ExamForm['threshold']): unknown {
-  if (typeof value === 'string' && /^\s*\d+\s*$/.test(value)) return Number(value);
-  return value === '' ? undefined : value;
+export interface PreparedExam {
+  title: string;
+  threshold: number;
+  questions: Question[];
 }
 
-export function prepareExam(fileName: string, bytes: Uint8Array, form: ExamForm): ValidationResult {
-  const threshold = readThreshold(form.threshold);
-  const title = form.title?.trim() ?? '';
+export type PrepareResult = { ok: true; quiz: PreparedExam } | { ok: false; errors: ValidationError[] };
 
-  if (!/\.(csv|json)$/i.test(fileName)) {
-    return { ok: false, errors: [{ path: '', message: 'Le fichier doit être un .csv ou un .json.' }] };
+// Vérifie le formulaire (titre, seuil) et le fichier CSV, et renvoie toutes les erreurs d'un coup.
+export function prepareExam(bytes: Uint8Array, form: ExamForm): PrepareResult {
+  const errors: ValidationError[] = [];
+
+  const title = String(form.title ?? '').trim();
+  if (title === '') errors.push({ path: 'titre', message: "Le titre de l'examen est obligatoire." });
+  else if (title.length > MAX_TITLE_LENGTH) errors.push({ path: 'titre', message: `Le titre dépasse ${MAX_TITLE_LENGTH} caractères.` });
+
+  // exams.threshold est NOT NULL : un entier de 0 à 100, reçu en texte ("70") depuis le formulaire.
+  const raw = String(form.threshold ?? '').trim();
+  const threshold = Number(raw);
+  if (!/^\d+$/.test(raw) || threshold > 100) {
+    errors.push({ path: 'seuil', message: 'Le seuil de réussite est obligatoire : un entier de 0 à 100.' });
   }
 
-  // CSV : titre et seuil viennent du formulaire. JSON : le formulaire complète ou remplace ceux du fichier.
-  let result = parseQuizUpload(fileName, bytes, { title, passingScore: threshold as number | undefined });
-  if (result.ok && /\.json$/i.test(fileName)) {
-    result = validateQuiz({
-      ...result.quiz,
-      title: title || result.quiz.title,
-      passingScore: threshold ?? result.quiz.passingScore ?? undefined,
-    });
-  }
+  const csv = parseQuizCsv(decodeText(bytes));
+  if (!csv.ok) errors.push(...csv.errors);
 
-  const missingThreshold = threshold === undefined && (!result.ok || result.quiz.passingScore === null);
-  if (!missingThreshold) return result;
-  const errors = result.ok ? [] : result.errors;
-  return { ok: false, errors: [{ path: 'seuil', message: 'Le seuil de réussite est obligatoire (0 à 100).' }, ...errors] };
+  if (!csv.ok || errors.length > 0) return { ok: false, errors };
+  return { ok: true, quiz: { title, threshold, questions: csv.questions } };
 }
 
 export interface ExamSummary {
@@ -96,7 +94,7 @@ export async function saveExam(db: DbClient, lessonId: number, quiz: PreparedExa
        ON CONFLICT (lesson_id) DO UPDATE
          SET exam_title = EXCLUDED.exam_title, threshold = EXCLUDED.threshold
        RETURNING exam_id`,
-      [quiz.title, quiz.passingScore, lessonId],
+      [quiz.title, quiz.threshold, lessonId],
     );
     const examId: number = rows[0].exam_id;
 

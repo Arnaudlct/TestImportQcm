@@ -26,44 +26,42 @@ export function examImportRouter(pool: Pool, requireProfessor: RequestHandler): 
     res.type('text/csv; charset=utf-8').attachment('modele-qcm.csv').send(TEMPLATE_CSV);
   });
 
-  // Vérifie le fichier et le formulaire ; répond lui-même en cas d'erreur,
-  // sinon passe la leçon et le QCM lu aux routes via res.locals.
-  const readUpload: RequestHandler = (req, res, next) => {
-    const lessonId = Number(req.params.lessonId);
-    if (!Number.isInteger(lessonId) || lessonId <= 0) {
-      res.status(404).json({ ok: false, errors: [{ path: '', message: 'Leçon introuvable.' }] });
-      return;
+  const notFound = { ok: false, errors: [{ path: '', message: 'Leçon introuvable.' }] };
+
+  // Commun aux deux routes POST : vérifie la leçon, le fichier et le formulaire.
+  // Répond lui-même en cas d'erreur, sinon passe la leçon et le QCM lu via res.locals.
+  const readUpload: RequestHandler = async (req, res, next) => {
+    try {
+      const lessonId = Number(req.params.lessonId);
+      if (!Number.isInteger(lessonId) || lessonId <= 0 || !(await lessonExists(pool, lessonId))) {
+        res.status(404).json(notFound);
+        return;
+      }
+      if (!req.file) {
+        res.status(422).json({ ok: false, errors: [{ path: 'fichier', message: 'Aucun fichier reçu (champ "file").' }] });
+        return;
+      }
+      if (!/\.csv$/i.test(req.file.originalname)) {
+        res.status(415).json({ ok: false, errors: [{ path: 'fichier', message: 'Le fichier doit être un .csv.' }] });
+        return;
+      }
+      const result = prepareExam(req.file.buffer, { title: req.body?.title, threshold: req.body?.threshold });
+      if (!result.ok) {
+        res.status(422).json(result);
+        return;
+      }
+      res.locals.lessonId = lessonId;
+      res.locals.quiz = result.quiz;
+      next();
+    } catch (error) {
+      next(error);
     }
-    if (!req.file) {
-      res.status(422).json({ ok: false, errors: [{ path: 'fichier', message: 'Aucun fichier reçu (champ "file").' }] });
-      return;
-    }
-    if (!/\.(csv|json)$/i.test(req.file.originalname)) {
-      res.status(415).json({ ok: false, errors: [{ path: 'fichier', message: 'Le fichier doit être un .csv ou un .json.' }] });
-      return;
-    }
-    const result = prepareExam(req.file.originalname, req.file.buffer, {
-      title: req.body?.title,
-      threshold: req.body?.threshold,
-    });
-    if (!result.ok) {
-      res.status(422).json(result);
-      return;
-    }
-    res.locals.lessonId = lessonId;
-    res.locals.quiz = result.quiz as PreparedExam;
-    next();
   };
 
   router.post('/lessons/:lessonId/exam/preview', requireProfessor, upload, readUpload, async (_req, res, next) => {
     try {
-      const lessonId: number = res.locals.lessonId;
-      if (!(await lessonExists(pool, lessonId))) {
-        res.status(404).json({ ok: false, errors: [{ path: '', message: 'Leçon introuvable.' }] });
-        return;
-      }
       // existing non nul = réimport : l'écran d'aperçu affiche l'avertissement.
-      res.json({ ok: true, quiz: res.locals.quiz, existing: await getExamSummary(pool, lessonId) });
+      res.json({ ok: true, quiz: res.locals.quiz, existing: await getExamSummary(pool, res.locals.lessonId) });
     } catch (error) {
       next(error);
     }
@@ -72,12 +70,7 @@ export function examImportRouter(pool: Pool, requireProfessor: RequestHandler): 
   router.post('/lessons/:lessonId/exam', requireProfessor, upload, readUpload, async (_req, res, next) => {
     const client = await pool.connect();
     try {
-      const lessonId: number = res.locals.lessonId;
-      if (!(await lessonExists(client, lessonId))) {
-        res.status(404).json({ ok: false, errors: [{ path: '', message: 'Leçon introuvable.' }] });
-        return;
-      }
-      const saved = await saveExam(client, lessonId, res.locals.quiz);
+      const saved = await saveExam(client, res.locals.lessonId, res.locals.quiz as PreparedExam);
       res.status(201).json({ ok: true, ...saved });
     } catch (error) {
       next(error);

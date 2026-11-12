@@ -2,7 +2,7 @@
 
 Projet de test de l'import des QCM dans Corelab, avec la stack du projet : React + Vite, Node.js + Express en TypeScript, PostgreSQL, Vitest + Supertest.
 
-Un professeur choisit une leçon, envoie un fichier CSV ou JSON, voit un aperçu (ou la liste des erreurs, avec ligne et colonne), puis confirme. L'examen est alors écrit dans `exams`, `mcq_questions` et `mcq_choices`, en une seule transaction.
+Un professeur choisit une leçon, envoie un fichier CSV, voit un aperçu (ou la liste des erreurs, avec ligne et colonne), puis confirme. L'examen est alors écrit dans `exams`, `mcq_questions` et `mcq_choices`, en une seule transaction.
 
 ## Lancer le projet
 
@@ -55,7 +55,7 @@ Le modèle est téléchargeable sur `GET /api/exam-template.csv`.
 | `POST /api/lessons/:lessonId/exam` | les mêmes champs | `201 { ok, examId, questionCount, replacedQuestions }` |
 | `GET /api/exam-template.csv` | rien | le modèle CSV |
 
-Erreurs : `422 { ok: false, errors: [{ path, message }] }` (toutes les erreurs d'un coup), `401`/`403` si l'utilisateur n'est pas professeur, `404` leçon inconnue, `413` fichier de plus de 1 Mo, `415` ni `.csv` ni `.json`.
+Erreurs : `422 { ok: false, errors: [{ path, message }] }` (toutes les erreurs d'un coup), `401`/`403` si l'utilisateur n'est pas professeur, `404` leçon inconnue, `413` fichier de plus de 1 Mo, `415` fichier qui n’est pas un `.csv`.
 
 Un réimport remplace les questions de l'examen et garde son `exam_id`, donc les résultats de `result_exam` sont conservés. `existing` dans l'aperçu permet de prévenir le professeur.
 
