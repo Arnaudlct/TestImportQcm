@@ -1,21 +1,26 @@
-// Import d'un QCM au format CSV (voir FORMAT.md) : une ligne par question.
-// Le CSV est converti en objet puis passé à validateQuiz, qui reste la seule
-// source des règles ; les emplacements d'erreur sont traduits en « ligne N, colonne X ».
+// Lecture et vérification d'un QCM au format CSV (voir FORMAT.md) : une ligne par question.
+// Chaque erreur est située directement dans le tableur : « ligne N, colonne X ».
 
-import { parseQuizFile, validateQuiz, type ValidationError, type ValidationResult } from './validateQuiz';
-
+export const LIMITS = { maxQuestions: 100, maxTextLength: 1000 } as const;
 export const CHOICE_COLUMNS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] as const;
 
-export interface CsvQuizOptions {
-  // Le CSV ne contient que les questions : titre et seuil viennent du formulaire d'import.
-  title: string;
-  passingScore?: number;
+export interface Choice {
+  text: string;
+  correct: boolean;
 }
 
-interface CsvRecord {
-  line: number; // ligne du fichier où commence l'enregistrement (1 = en-tête)
-  cells: string[];
+export interface Question {
+  question: string;
+  multiple: boolean;
+  choices: Choice[];
 }
+
+export interface ValidationError {
+  path: string;
+  message: string;
+}
+
+export type CsvResult = { ok: true; questions: Question[] } | { ok: false; errors: ValidationError[] };
 
 // Excel enregistre souvent en Windows-1252 (« CSV séparateur point-virgule ») :
 // on tente l'UTF-8 strict, sinon on retombe sur Windows-1252.
@@ -27,34 +32,23 @@ export function decodeText(bytes: Uint8Array): string {
   }
 }
 
-// Séparateur le plus fréquent sur la première ligne, hors guillemets.
+// Séparateur le plus fréquent sur la première ligne.
 function detectSeparator(content: string): string {
-  const counts: Record<string, number> = { ';': 0, ',': 0, '\t': 0 };
-  let quoted = false;
-  for (const ch of content) {
-    if (ch === '"') quoted = !quoted;
-    else if (!quoted && (ch === '\n' || ch === '\r')) break;
-    else if (!quoted && ch in counts) counts[ch]++;
-  }
-  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+  const firstLine = content.split(/\r?\n/, 1)[0];
+  const count = (sep: string) => firstLine.split(sep).length;
+  return [';', ',', '\t'].reduce((best, sep) => (count(sep) > count(best) ? sep : best));
 }
 
 // Lecture CSV (RFC 4180) : champs entre guillemets, "" pour un guillemet,
 // retours à la ligne dans un champ, fins de ligne \n ou \r\n.
-function readRecords(content: string, sep: string): { records: CsvRecord[]; unclosedQuoteLine: number | null } {
-  const records: CsvRecord[] = [];
+// Chaque ligne lue garde le numéro de ligne du fichier où elle commence.
+function readRows(content: string, sep: string): { line: number; cells: string[] }[] | { unclosedQuoteLine: number } {
+  const rows: { line: number; cells: string[] }[] = [];
   let cells: string[] = [];
   let cell = '';
   let quoted = false;
   let line = 1;
-  let recordLine = 1;
-
-  const endRecord = () => {
-    cells.push(cell);
-    records.push({ line: recordLine, cells });
-    cells = [];
-    cell = '';
-  };
+  let rowLine = 1;
 
   for (let i = 0; i < content.length; i++) {
     const ch = content[i];
@@ -75,135 +69,91 @@ function readRecords(content: string, sep: string): { records: CsvRecord[]; uncl
       cell = '';
     } else if (ch === '\n' || ch === '\r') {
       if (ch === '\r' && content[i + 1] === '\n') i++;
-      endRecord();
-      line++;
-      recordLine = line;
+      rows.push({ line: rowLine, cells: [...cells, cell] });
+      cells = [];
+      cell = '';
+      rowLine = ++line;
     } else {
       cell += ch;
     }
   }
-  if (quoted) return { records, unclosedQuoteLine: recordLine };
-  if (cell !== '' || cells.length > 0) endRecord();
-  return { records, unclosedQuoteLine: null };
+  if (quoted) return { unclosedQuoteLine: rowLine };
+  if (cell !== '' || cells.length > 0) rows.push({ line: rowLine, cells: [...cells, cell] });
+  return rows;
 }
 
+// Sans accents ni majuscules, pour lire l'en-tête « Réponses » comme « reponses ».
 const normalize = (s: string) =>
   s.normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
 
-const ANSWER_HEADERS = ['reponse', 'reponses', 'bonne reponse', 'bonnes reponses'];
-
-export function parseQuizCsv(content: string, options: CsvQuizOptions): ValidationResult {
+export function parseQuizCsv(content: string): CsvResult {
   const text = content.replace(/^﻿/, '');
   const sep = detectSeparator(text);
-  const { records, unclosedQuoteLine } = readRecords(text, sep);
-
-  if (unclosedQuoteLine !== null) {
-    return { ok: false, errors: [{ path: `ligne ${unclosedQuoteLine}`, message: 'Guillemet ouvert jamais refermé.' }] };
-  }
-  const rows = records.filter((r) => r.cells.some((c) => c.trim() !== ''));
-  if (rows.length === 0) {
-    return { ok: false, errors: [{ path: '', message: 'Le fichier est vide.' }] };
+  const read = readRows(text, sep);
+  if (!Array.isArray(read)) {
+    return { ok: false, errors: [{ path: `ligne ${read.unclosedQuoteLine}`, message: 'Guillemet ouvert jamais refermé.' }] };
   }
 
-  // En-tête : question, A…H (au moins deux), réponses — dans cet ordre.
+  const rows = read.filter((r) => r.cells.some((c) => c.trim() !== ''));
+  if (rows.length === 0) return { ok: false, errors: [{ path: '', message: 'Le fichier est vide.' }] };
+
+  // En-tête : question, A…H (au moins deux), reponses, dans cet ordre.
   const header = rows[0].cells.map(normalize);
   const letters = header.slice(1, -1).map((h) => h.toUpperCase());
-  const expected = CHOICE_COLUMNS.slice(0, letters.length);
   if (
     header[0] !== 'question' ||
-    !ANSWER_HEADERS.includes(header[header.length - 1]) ||
+    !['reponse', 'reponses'].includes(header[header.length - 1]) ||
     letters.length < 2 ||
-    letters.length > CHOICE_COLUMNS.length ||
-    letters.some((l, i) => l !== expected[i])
+    letters.join('') !== CHOICE_COLUMNS.slice(0, letters.length).join('')
   ) {
-    return {
-      ok: false,
-      errors: [
-        {
-          path: 'ligne 1',
-          message: `En-tête attendu : question${sep}A${sep}B${sep}…${sep}reponses (de 2 à ${CHOICE_COLUMNS.length} colonnes de choix, de A à H).`,
-        },
-      ],
-    };
+    const example = ['question', 'A', 'B', '…', 'reponses'].join(sep);
+    return { ok: false, errors: [{ path: 'ligne 1', message: `En-tête attendu : ${example} (de 2 à 8 colonnes de choix, de A à H).` }] };
   }
 
-  if (rows.length === 1) {
-    return { ok: false, errors: [{ path: '', message: "Aucune question sous la ligne d'en-tête." }] };
-  }
+  const lines = rows.slice(1);
+  if (lines.length === 0) return { ok: false, errors: [{ path: '', message: "Aucune question sous la ligne d'en-tête." }] };
 
   const errors: ValidationError[] = [];
-  const answerErrorLines = new Set<number>();
-  // Pour chaque question : sa ligne et la lettre de chaque choix gardé.
-  const sources: { line: number; letters: string[] }[] = [];
+  const fail = (path: string, message: string) => errors.push({ path, message });
+  if (lines.length > LIMITS.maxQuestions) fail('', `Un QCM ne peut pas dépasser ${LIMITS.maxQuestions} questions.`);
 
-  const questions = rows.slice(1).map((row) => {
+  const questions = lines.map((row): Question => {
     const at = `ligne ${row.line}`;
-    if (row.cells.length > header.length) {
-      errors.push({ path: at, message: `Trop de colonnes (${row.cells.length} au lieu de ${header.length}).` });
-    }
     const cell = (i: number) => (row.cells[i] ?? '').trim();
+    const tooLong = (value: string, column: string) => {
+      if (value.length > LIMITS.maxTextLength) fail(`${at}, colonne ${column}`, `Le texte dépasse ${LIMITS.maxTextLength} caractères.`);
+    };
 
-    const choices: { text: string; correct: boolean }[] = [];
-    const kept: string[] = [];
-    letters.forEach((letter, i) => {
-      const value = cell(i + 1);
-      if (value !== '') {
-        choices.push({ text: value, correct: false });
-        kept.push(letter);
-      }
-    });
+    if (row.cells.length > header.length) fail(at, `Trop de colonnes (${row.cells.length} au lieu de ${header.length}).`);
 
+    const question = cell(0);
+    if (question === '') fail(`${at}, colonne question`, "L'intitulé de la question est obligatoire.");
+    tooLong(question, 'question');
+
+    // Les cases vides sont ignorées : les choix gardent leur lettre de colonne.
+    const filled = letters.map((letter, i) => ({ letter, text: cell(i + 1) })).filter((c) => c.text !== '');
+    filled.forEach((c) => tooLong(c.text, c.letter));
+    if (filled.length < 2) fail(at, 'Une question doit avoir au moins 2 choix remplis.');
+    const texts = filled.map((c) => c.text.toLowerCase());
+    if (new Set(texts).size !== texts.length) fail(at, 'Deux choix ont le même texte.');
+
+    // Bonnes réponses : « A », « A,C », « A+C », « A C » ou « ac ».
+    const answerAt = `${at}, colonne reponses`;
     const answer = cell(header.length - 1).toUpperCase();
-    const answerCol = `${at}, colonne reponses`;
     const picked = answer.replace(/[\s,;+/]/g, '');
     if (!/^[A-Z]*$/.test(picked)) {
-      errors.push({ path: answerCol, message: `"${answer}" : indique les lettres des bonnes réponses, par exemple A ou A,C.` });
-      answerErrorLines.add(row.line);
+      fail(answerAt, `"${answer}" : indique les lettres des bonnes réponses, par exemple A ou A,C.`);
+    } else if (picked === '') {
+      fail(answerAt, 'Aucune bonne réponse : indique au moins une lettre (A, B…).');
     } else {
       for (const letter of picked) {
-        const index = kept.indexOf(letter);
-        if (index === -1) {
-          errors.push({ path: answerCol, message: `La réponse ${letter} désigne une case de choix vide ou inexistante.` });
-          answerErrorLines.add(row.line);
-        } else {
-          choices[index].correct = true;
-        }
+        if (!filled.some((c) => c.letter === letter)) fail(answerAt, `La réponse ${letter} désigne une case de choix vide ou inexistante.`);
       }
     }
 
-    sources.push({ line: row.line, letters: kept });
-    return { question: cell(0), choices };
+    const choices = filled.map((c) => ({ text: c.text, correct: picked.includes(c.letter) }));
+    return { question, multiple: choices.filter((c) => c.correct).length > 1, choices };
   });
 
-  const result = validateQuiz({ title: options.title, passingScore: options.passingScore, questions });
-  if (result.ok && errors.length === 0) return result;
-
-  // Traduction des emplacements de validateQuiz vers le vocabulaire du tableur.
-  const translated = (result.ok ? [] : result.errors).flatMap((e): ValidationError[] => {
-    const m = e.path.match(/^questions\[(\d+)\](?:\.(question|choices)(?:\[(\d+)\])?)?/);
-    if (!m) {
-      const label = e.path === 'title' ? 'titre' : e.path === 'passingScore' ? 'seuil' : e.path === 'questions' ? '' : e.path;
-      return [{ path: label, message: e.message }];
-    }
-    const src = sources[Number(m[1])];
-    const at = `ligne ${src.line}`;
-    if (m[2] === 'question') return [{ path: `${at}, colonne question`, message: e.message }];
-    if (m[3] !== undefined) return [{ path: `${at}, colonne ${src.letters[Number(m[3])]}`, message: e.message }];
-    if (/correct/.test(e.message)) {
-      if (answerErrorLines.has(src.line)) return [];
-      return [{ path: `${at}, colonne reponses`, message: 'Aucune bonne réponse : indique au moins une lettre (A, B…).' }];
-    }
-    return [{ path: at, message: e.message }];
-  });
-
-  const all = [...errors, ...translated].sort((a, b) => lineOf(a) - lineOf(b));
-  return { ok: false, errors: all };
-}
-
-const lineOf = (e: ValidationError) => Number(e.path.match(/^ligne (\d+)/)?.[1] ?? 0);
-
-// Point d'entrée de l'upload : choisit le format selon l'extension du fichier.
-export function parseQuizUpload(fileName: string, bytes: Uint8Array, options: CsvQuizOptions): ValidationResult {
-  const content = decodeText(bytes);
-  return /\.csv$/i.test(fileName) ? parseQuizCsv(content, options) : parseQuizFile(content);
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, questions };
 }

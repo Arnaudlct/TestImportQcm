@@ -22,7 +22,7 @@ export default function ExamImport({ lesson, onSaved }: { lesson: Lesson; onSave
   function pickFile(f: File | null) {
     setFile(f);
     setStep({ kind: 'form' });
-    if (f && titleFromFile) setTitle(f.name.replace(/\.(csv|json)$/i, ''));
+    if (f && titleFromFile) setTitle(f.name.replace(/\.csv$/i, ''));
   }
 
   async function onPreview(e: FormEvent) {
@@ -56,8 +56,8 @@ export default function ExamImport({ lesson, onSaved }: { lesson: Lesson; onSave
 
       <form className="form" onSubmit={onPreview}>
         <div className="field">
-          <label htmlFor="exam-file">Fichier CSV ou JSON</label>
-          <input id="exam-file" type="file" accept=".csv,.json" onChange={(e) => pickFile(e.target.files?.[0] ?? null)} />
+          <label htmlFor="exam-file">Fichier CSV</label>
+          <input id="exam-file" type="file" accept=".csv" onChange={(e) => pickFile(e.target.files?.[0] ?? null)} />
           <a className="hint" href="/api/exam-template.csv">Télécharger le modèle CSV</a>
         </div>
         <div className="row">
@@ -117,7 +117,7 @@ export default function ExamImport({ lesson, onSaved }: { lesson: Lesson; onSave
           )}
           <h3 className="exam-title">{step.quiz.title}</h3>
           <p className="muted">
-            {step.quiz.questions.length} questions · seuil {step.quiz.passingScore} %
+            {step.quiz.questions.length} questions · seuil {step.quiz.threshold} %
           </p>
           <ol className="questions">
             {step.quiz.questions.map((q, i) => (

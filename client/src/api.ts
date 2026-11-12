@@ -2,7 +2,7 @@
 
 export interface Choice { text: string; correct: boolean }
 export interface Question { question: string; multiple: boolean; choices: Choice[] }
-export interface Quiz { title: string; passingScore: number; questions: Question[] }
+export interface Quiz { title: string; threshold: number; questions: Question[] }
 export interface ApiError { path: string; message: string }
 export interface ExamSummary { examId: number; title: string; threshold: number; questionCount: number; resultCount?: number }
 export interface Lesson { lessonId: number; title: string; module: string; exam: ExamSummary | null }

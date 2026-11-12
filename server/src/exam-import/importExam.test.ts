@@ -3,54 +3,46 @@ import { readFileSync } from 'node:fs';
 import express, { type RequestHandler } from 'express';
 import request from 'supertest';
 import pg from 'pg';
-import { prepareExam, saveExam, getExamSummary, type PreparedExam } from './importExam';
+import { prepareExam, saveExam, getExamSummary, type PreparedExam, type PrepareResult } from './importExam';
 import { examImportRouter } from './examImportRouter';
-import type { ValidationResult } from './validateQuiz';
 
 const csv = readFileSync(new URL('./exemple-qcm.csv', import.meta.url));
-const json = readFileSync(new URL('./exemple-qcm.json', import.meta.url));
 const bytes = (s: string) => new TextEncoder().encode(s);
 
-function quizOf(result: ValidationResult) {
+function quizOf(result: PrepareResult) {
   if (!result.ok) throw new Error(`Validation inattendue en échec : ${JSON.stringify(result.errors)}`);
-  return result.quiz as PreparedExam;
+  return result.quiz;
 }
-function errorsOf(result: ValidationResult) {
+function errorsOf(result: PrepareResult) {
   if (result.ok) throw new Error('La validation aurait dû échouer');
   return result.errors;
 }
 
 describe('prepareExam', () => {
   it('lit un CSV avec le titre et le seuil du formulaire', () => {
-    const quiz = quizOf(prepareExam('qcm.csv', csv, { title: 'HTML', threshold: '70' }));
-    expect(quiz).toMatchObject({ title: 'HTML', passingScore: 70 });
+    const quiz = quizOf(prepareExam(csv, { title: 'HTML', threshold: '70' }));
+    expect(quiz).toMatchObject({ title: 'HTML', threshold: 70 });
     expect(quiz.questions).toHaveLength(4);
   });
 
   it('exige le seuil, en plus des autres erreurs', () => {
-    expect(errorsOf(prepareExam('qcm.csv', csv, { title: 'HTML' })).map((e) => e.path)).toEqual(['seuil']);
-    expect(errorsOf(prepareExam('qcm.csv', csv, { title: '', threshold: '' })).map((e) => e.path)).toEqual(['seuil', 'titre']);
+    expect(errorsOf(prepareExam(csv, { title: 'HTML' })).map((e) => e.path)).toEqual(['seuil']);
+    expect(errorsOf(prepareExam(csv, { title: '', threshold: '' })).map((e) => e.path)).toEqual(['titre', 'seuil']);
   });
 
   it('refuse un seuil invalide', () => {
     for (const threshold of ['abc', '101', '-5', '50.5']) {
-      expect(errorsOf(prepareExam('qcm.csv', csv, { title: 'HTML', threshold })).map((e) => e.path)).toContain('seuil');
+      expect(errorsOf(prepareExam(csv, { title: 'HTML', threshold })).map((e) => e.path)).toContain('seuil');
     }
   });
 
   it('refuse un titre de plus de 200 caractères (exams.exam_title)', () => {
-    expect(errorsOf(prepareExam('qcm.csv', csv, { title: 'T'.repeat(201), threshold: 70 }))[0].path).toBe('titre');
+    expect(errorsOf(prepareExam(csv, { title: 'T'.repeat(201), threshold: 70 }))[0].path).toBe('titre');
   });
 
-  it('pour un JSON, le formulaire remplace le titre et complète le seuil', () => {
-    expect(quizOf(prepareExam('qcm.json', json, {}))).toMatchObject({ title: 'Les bases du HTML', passingScore: 70 });
-    expect(quizOf(prepareExam('qcm.json', json, { title: 'Autre', threshold: '80' }))).toMatchObject({ title: 'Autre', passingScore: 80 });
-    const sansSeuil = JSON.stringify({ ...JSON.parse(json.toString()), passingScore: undefined });
-    expect(errorsOf(prepareExam('qcm.json', bytes(sansSeuil), {}))[0].path).toBe('seuil');
-  });
-
-  it('refuse une autre extension', () => {
-    expect(errorsOf(prepareExam('qcm.xlsx', csv, { title: 'HTML', threshold: 70 }))[0].message).toMatch(/\.csv ou un \.json/);
+  it('renvoie en une fois les erreurs du formulaire et celles du fichier', () => {
+    const errors = errorsOf(prepareExam(bytes('question;A;B;reponses\nQ ?;Oui;Non;\n'), { title: '', threshold: '' }));
+    expect(errors.map((e) => e.path)).toEqual(['titre', 'seuil', 'ligne 2, colonne reponses']);
   });
 });
 
@@ -93,7 +85,7 @@ describe.skipIf(!url)('base Corelab (PostgreSQL)', () => {
   }
 
   it('enregistre l’examen, ses questions et ses choix avec leur lettre', async () => {
-    const saved = await save(quizOf(prepareExam('qcm.csv', csv, { title: 'HTML', threshold: '70' })));
+    const saved = await save(quizOf(prepareExam(csv, { title: 'HTML', threshold: '70' })));
     expect(saved).toMatchObject({ questionCount: 4, replacedQuestions: 0 });
 
     const exam = await pool.query('SELECT exam_title, threshold, lesson_id FROM exams');
@@ -112,11 +104,11 @@ describe.skipIf(!url)('base Corelab (PostgreSQL)', () => {
   });
 
   it('un réimport remplace les questions, garde l’exam_id et les résultats', async () => {
-    const first = await save(quizOf(prepareExam('qcm.csv', csv, { title: 'HTML', threshold: 70 })));
+    const first = await save(quizOf(prepareExam(csv, { title: 'HTML', threshold: 70 })));
     await pool.query('INSERT INTO result_exam (result, exam_id, user_id) VALUES (85, $1, $2)', [first.examId, studentId]);
 
     const reimport = bytes('question;A;B;reponses\nNouvelle question ?;Oui;Non;A\n');
-    const second = await save(quizOf(prepareExam('v2.csv', reimport, { title: 'HTML v2', threshold: 60 })));
+    const second = await save(quizOf(prepareExam(reimport, { title: 'HTML v2', threshold: 60 })));
 
     expect(second).toEqual({ examId: first.examId, questionCount: 1, replacedQuestions: 4 });
     expect((await pool.query('SELECT count(*)::int AS n FROM mcq_choices')).rows[0].n).toBe(2);
@@ -130,7 +122,7 @@ describe.skipIf(!url)('base Corelab (PostgreSQL)', () => {
   });
 
   it('annule tout si une écriture échoue', async () => {
-    const quiz = quizOf(prepareExam('qcm.csv', csv, { title: 'HTML', threshold: 70 }));
+    const quiz = quizOf(prepareExam(csv, { title: 'HTML', threshold: 70 }));
     const client = await pool.connect();
     try {
       await expect(saveExam(client, 9999, quiz)).rejects.toThrow(/foreign key/);
@@ -198,7 +190,7 @@ describe.skipIf(!url)('base Corelab (PostgreSQL)', () => {
         r.on('end', () => cb(null, Buffer.concat(chunks)));
       });
       expect(res.status).toBe(200);
-      expect(quizOf(prepareExam('modele.csv', res.body, { title: 'Modèle', threshold: 50 })).questions).toHaveLength(2);
+      expect(quizOf(prepareExam(res.body, { title: 'Modèle', threshold: 50 })).questions).toHaveLength(2);
     });
   });
 });
