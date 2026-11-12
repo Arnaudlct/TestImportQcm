@@ -125,7 +125,7 @@ describe.skipIf(!url)('base Corelab (PostgreSQL)', () => {
     const quiz = quizOf(prepareExam(csv, { title: 'HTML', threshold: 70 }));
     const client = await pool.connect();
     try {
-      await expect(saveExam(client, 9999, quiz)).rejects.toThrow(/foreign key/);
+      await expect(saveExam(client, 9999, quiz)).rejects.toThrow(/exams_lesson_id_fkey/);
     } finally {
       client.release();
     }
